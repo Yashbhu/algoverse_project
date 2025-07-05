@@ -1,0 +1,4 @@
+requests
+spacy
+python-dotenv
+en_core_web_sm
