@@ -10,7 +10,6 @@ __pycache__/
 .vscode/
 
 # Ignore JSON output if you don’t want to track result files
-*.json
 
 logs
 *.log
