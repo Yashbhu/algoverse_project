@@ -319,7 +319,7 @@ const SearchPage = () => {
   const pollProgress = async (searchId) => {
     const pollInterval = setInterval(async () => {
       try {
-        const response = await fetch(`http://localhost:6969/progress/${searchId}`);
+        const response = await fetch(`https://osint-1-r7m0.onrender.com/progress/${searchId}`);
         const progressData = await response.json();
         
         setProgress(progressData);
