@@ -292,6 +292,7 @@ import { Search, ArrowLeft, FileText, User } from "lucide-react";
 import { useNavigate } from 'react-router-dom';
 import { useToast } from "@/hooks/use-toast";
 import { motion } from 'framer-motion';
+import { API_BASE_URL } from "@/config";
 
 const SearchPage = () => {
   const navigate = useNavigate();
@@ -319,7 +320,7 @@ const SearchPage = () => {
   const pollProgress = async (searchId) => {
     const pollInterval = setInterval(async () => {
       try {
-        const response = await fetch(`https://osint-1-r7m0.onrender.com/progress/${searchId}`);
+        const response = await fetch(`${API_BASE_URL}/progress/${searchId}`);
         const progressData = await response.json();
         
         setProgress(progressData);
@@ -370,7 +371,7 @@ const SearchPage = () => {
     }, 2000);
 
     try {
-      const response = await fetch('https://osint-1-r7m0.onrender.com/osint', {
+      const response = await fetch(`${API_BASE_URL}/osint`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData)
@@ -414,7 +415,7 @@ const SearchPage = () => {
     }
 
     try {
-      const response = await fetch('https://osint-1-r7m0.onrender.com/generate-report', {
+      const response = await fetch(`${API_BASE_URL}/generate-report`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ personData })

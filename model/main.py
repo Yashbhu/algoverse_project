@@ -260,10 +260,11 @@ osint_service.progress_store = progress_store
 @app.route('/')
 def home():
     return "Flask is up and running"
-
+    
 @app.route("/osint", methods=["POST"])
 def osint():
     data = request.json
+    print(f"📥 Received data: {data}")
     name = data.get("name")
     city = data.get("city")
     extras = data.get("extraTerms", "").split(",")
@@ -285,6 +286,7 @@ def osint():
 
     def run_search():
         try:
+            print(f"🔍 Starting OSINT for: {name}, {city}, {extras}")
             # Update progress stages
             progress_store[search_id].update({"percentage": 5, "stage": "Initializing search..."})
             time.sleep(0.3)
