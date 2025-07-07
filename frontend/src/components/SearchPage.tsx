@@ -370,7 +370,7 @@ const SearchPage = () => {
     }, 2000);
 
     try {
-      const response = await fetch('http://localhost:6969/osint', {
+      const response = await fetch('https://osint-1-r7m0.onrender.com/osint', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData)
@@ -414,7 +414,7 @@ const SearchPage = () => {
     }
 
     try {
-      const response = await fetch('http://localhost:6969/generate-report', {
+      const response = await fetch('https://osint-1-r7m0.onrender.com/generate-report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ personData })

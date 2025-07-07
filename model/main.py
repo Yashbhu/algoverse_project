@@ -248,7 +248,7 @@ import threading
 import time
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins=["http://localhost:8080", "https://osint-blue.vercel.app"])
 
 # Global dictionary to store progress for each search
 progress_store = {}
