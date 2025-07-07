@@ -12,7 +12,7 @@ app = FastAPI(title="OSINT Search API")
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8080", "http://localhost:3000"],  # Vite default ports
+    allow_origins=["https://osint-blue.vercel.app"],  # Vite default ports
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

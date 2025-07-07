@@ -128,7 +128,7 @@ const handleSearch = async () => {
   }, 2000);
 
   try {
-    const response = await fetch('http://localhost:8000/api/search', {
+    const response = await fetch('https://osint-1-r7m0.onrender.com/api/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(formData)
@@ -173,7 +173,7 @@ const handleGenerateReport = async () => {
   }
 
   try {
-    const response = await fetch('http://localhost:8000/api/generate-report', {
+    const response = await fetch('https://osint-1-r7m0.onrender.com/api/generate-report', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ personData })
