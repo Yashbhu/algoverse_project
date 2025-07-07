@@ -30,92 +30,174 @@ const SearchPage = () => {
     "Privacy and transparency in perfect balance."
   ];
 
-  const handleSearch = async () => {
-    setIsSearching(true);
-    setHasResults(false);
+  // const handleSearch = async () => {
+  //   setIsSearching(true);
+  //   setHasResults(false);
     
-    // Simulate quote rotation during search
-    const quoteInterval = setInterval(() => {
-      setCurrentQuote((prev) => (prev + 1) % osintQuotes.length);
-    }, 2000);
+  //   // Simulate quote rotation during search
+  //   const quoteInterval = setInterval(() => {
+  //     setCurrentQuote((prev) => (prev + 1) % osintQuotes.length);
+  //   }, 2000);
 
-    try {
-      // TODO: Replace with your actual backend API call
-      // const response = await fetch('/api/search', {
-      //   method: 'POST',
-      //   headers: { 'Content-Type': 'application/json' },
-      //   body: JSON.stringify(formData)
-      // });
-      // const data = await response.json();
+  //   try {
+  //     // TODO: Replace with your actual backend API call
+  //     // const response = await fetch('/api/search', {
+  //     //   method: 'POST',
+  //     //   headers: { 'Content-Type': 'application/json' },
+  //     //   body: JSON.stringify(formData)
+  //     // });
+  //     // const data = await response.json();
       
-      // Simulate API call for now
-      setTimeout(() => {
-        clearInterval(quoteInterval);
-        setIsSearching(false);
-        setHasResults(true);
+  //     // Simulate API call for now
+  //     setTimeout(() => {
+  //       clearInterval(quoteInterval);
+  //       setIsSearching(false);
+  //       setHasResults(true);
         
-        // Mock data - replace with actual API response
-        setPersonData({
-          name: formData.name,
-          location: formData.city,
-          summary: "This is where your backend will provide a comprehensive summary of the person's publicly available information. Connect your backend API to replace this placeholder text.",
-          confidence: "85%",
-          lastUpdated: new Date().toLocaleDateString()
-        });
+  //       // Mock data - replace with actual API response
+  //       setPersonData({
+  //         name: formData.name,
+  //         location: formData.city,
+  //         summary: "This is where your backend will provide a comprehensive summary of the person's publicly available information. Connect your backend API to replace this placeholder text.",
+  //         confidence: "85%",
+  //         lastUpdated: new Date().toLocaleDateString()
+  //       });
         
-        toast({
-          title: "Search Completed",
-          description: "Person information has been retrieved successfully."
-        });
-      }, 6000);
-    } catch (error) {
-      clearInterval(quoteInterval);
-      setIsSearching(false);
-      toast({
-        title: "Search Failed",
-        description: "Unable to retrieve information. Please try again.",
-        variant: "destructive"
-      });
-    }
-  };
+  //       toast({
+  //         title: "Search Completed",
+  //         description: "Person information has been retrieved successfully."
+  //       });
+  //     }, 6000);
+  //   } catch (error) {
+  //     clearInterval(quoteInterval);
+  //     setIsSearching(false);
+  //     toast({
+  //       title: "Search Failed",
+  //       description: "Unable to retrieve information. Please try again.",
+  //       variant: "destructive"
+  //     });
+  //   }
+  // };
 
-  const handleGenerateReport = async () => {
-    if (!personData) {
-      toast({
-        title: "No Data Available",
-        description: "Please perform a search first to generate a report.",
-        variant: "destructive"
-      });
-      return;
-    }
+  // const handleGenerateReport = async () => {
+  //   if (!personData) {
+  //     toast({
+  //       title: "No Data Available",
+  //       description: "Please perform a search first to generate a report.",
+  //       variant: "destructive"
+  //     });
+  //     return;
+  //   }
 
-    try {
-      // TODO: Replace with your actual report generation API
-      // const response = await fetch('/api/generate-report', {
-      //   method: 'POST',
-      //   headers: { 'Content-Type': 'application/json' },
-      //   body: JSON.stringify(personData)
-      // });
+  //   try {
+  //     // TODO: Replace with your actual report generation API
+  //     // const response = await fetch('/api/generate-report', {
+  //     //   method: 'POST',
+  //     //   headers: { 'Content-Type': 'application/json' },
+  //     //   body: JSON.stringify(personData)
+  //     // });
       
-      toast({
-        title: "Report Generated",
-        description: "A detailed report has been created and will be available for download shortly."
-      });
+  //     toast({
+  //       title: "Report Generated",
+  //       description: "A detailed report has been created and will be available for download shortly."
+  //     });
       
-      // Simulate report generation
-      console.log('Generating report for:', personData);
+  //     // Simulate report generation
+  //     console.log('Generating report for:', personData);
       
-      // You can add actual report generation logic here
-      // For example, creating a PDF or sending to an email
+  //     // You can add actual report generation logic here
+  //     // For example, creating a PDF or sending to an email
       
-    } catch (error) {
-      toast({
-        title: "Report Generation Failed",
-        description: "Unable to generate report. Please try again.",
-        variant: "destructive"
-      });
+  //   } catch (error) {
+  //     toast({
+  //       title: "Report Generation Failed",
+  //       description: "Unable to generate report. Please try again.",
+  //       variant: "destructive"
+  //     });
+  //   }
+  // };
+
+  // Replace the handleSearch function with this:
+const handleSearch = async () => {
+  setIsSearching(true);
+  setHasResults(false);
+  
+  // Quote rotation during search
+  const quoteInterval = setInterval(() => {
+    setCurrentQuote((prev) => (prev + 1) % osintQuotes.length);
+  }, 2000);
+
+  try {
+    const response = await fetch('http://localhost:8000/api/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(formData)
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
     }
-  };
+    
+    const data = await response.json();
+    
+    clearInterval(quoteInterval);
+    setIsSearching(false);
+    setHasResults(true);
+    setPersonData(data.data);
+    
+    toast({
+      title: "Search Completed",
+      description: `Found ${data.data.totalResults} results for ${formData.name}`
+    });
+    
+  } catch (error) {
+    clearInterval(quoteInterval);
+    setIsSearching(false);
+    toast({
+      title: "Search Failed",
+      description: `Unable to retrieve information: ${error.message}`,
+      variant: "destructive"
+    });
+  }
+};
+
+// Replace the handleGenerateReport function with this:
+const handleGenerateReport = async () => {
+  if (!personData) {
+    toast({
+      title: "No Data Available",
+      description: "Please perform a search first to generate a report.",
+      variant: "destructive"
+    });
+    return;
+  }
+
+  try {
+    const response = await fetch('http://localhost:8000/api/generate-report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ personData })
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    
+    toast({
+      title: "Report Generated",
+      description: `Report saved as: ${data.reportPath}`
+    });
+    
+  } catch (error) {
+    toast({
+      title: "Report Generation Failed",
+      description: `Unable to generate report: ${error.message}`,
+      variant: "destructive"
+    });
+  }
+};
 
   return (
     <div className="min-h-screen bg-black relative overflow-hidden">

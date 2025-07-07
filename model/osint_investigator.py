@@ -76,7 +76,6 @@ def enrich_with_nlp(results):
 def is_name_match(target_name, entities):
     target_parts = [part.lower() for part in target_name.split() if part.strip()]
     if len(target_parts) < 2:
-        # If only one name part provided, fallback to existing logic
         target = target_parts[0]
         for ent in entities:
             if ent['label'] == 'PERSON':
@@ -84,7 +83,6 @@ def is_name_match(target_name, entities):
                 if target in person_name or person_name in target:
                     return True
     else:
-        # Require both first and last (or all parts) to appear in entity
         for ent in entities:
             if ent['label'] == 'PERSON':
                 person_name = ent['text'].lower()
@@ -93,13 +91,9 @@ def is_name_match(target_name, entities):
     return False
 
 def gemini_summarize(name, city, extras, title, snippet, link, entities):
-    # Combine extras text nicely
     extras_text = ", ".join(extras) if extras else "N/A"
-    
-    # Format entities list
     entity_summary = "\n".join([f'- {e["label"]}: {e["text"]}' for e in entities])
     
-    # Build prompt
     prompt = f"""Search about {name}, {city}, {extras_text} on the web and integrate a summary using:
     Title: {title}
     Snippet: "{snippet}"
@@ -116,9 +110,6 @@ Generate a clear, concise summary suitable for an OSINT investigation report.
         print(f"Gemini error: {e}")
         return None
 
-
-
-
 def save_json(name, city, results):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_name = safe_filename(name)
@@ -127,15 +118,13 @@ def save_json(name, city, results):
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
     print(f"✅ Results saved to {filename}")
+    return filename
 
-def main():
+def search_person(name, city, extra_terms):
+    """Main search function to be called by FastAPI"""
     if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
         raise ValueError("Missing Google API key or CSE ID in .env")
 
-    name = input("Enter name: ").strip()
-    city = input("Enter city: ").strip()
-    extra_input = input("Optional extra terms (comma-separated e.g. doctor, IIT): ").strip()
-    extra_terms = [e.strip() for e in extra_input.split(",")] if extra_input else []
     extra_text = " ".join(extra_terms)
 
     # === LinkedIn search ===
@@ -167,9 +156,41 @@ def main():
         summary = gemini_summarize(name, city, extra_terms, r['title'], r['snippet'], r['link'], r['entities'])
         r["gemini_summary"] = summary or "Summary not available"
 
+    # Save to JSON file
+    save_json(name, city, filtered_results)
+    
+    return filtered_results
 
-    save_json(name, city,filtered_results)
+def generate_report_file(person_data):
+    """Generate a detailed report file"""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_name = safe_filename(person_data.get('name', 'unknown'))
+    filename = f"osint_report_{safe_name}_{timestamp}.json"
+    
+    report_data = {
+        "generated_at": datetime.now().isoformat(),
+        "person_data": person_data,
+        "report_type": "OSINT Investigation Report"
+    }
+    
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(report_data, f, ensure_ascii=False, indent=2)
+    
+    print(f"✅ Report saved to {filename}")
+    return filename
+
+def main():
+    """Original main function for standalone usage"""
+    if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
+        raise ValueError("Missing Google API key or CSE ID in .env")
+
+    name = input("Enter name: ").strip()
+    city = input("Enter city: ").strip()
+    extra_input = input("Optional extra terms (comma-separated e.g. doctor, IIT): ").strip()
+    extra_terms = [e.strip() for e in extra_input.split(",")] if extra_input else []
+
+    results = search_person(name, city, extra_terms)
+    print(f"Found {len(results)} results")
 
 if __name__ == "__main__":
     main()
-
