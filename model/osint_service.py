@@ -105,14 +105,28 @@ def gemini_summarize_with_progress(name, city, extras, title, snippet, link, ent
     extras_text = ", ".join(extras) if extras else "N/A"
     entity_summary = "\n".join([f'- {e["label"]}: {e["text"]}' for e in entities])
 
-    prompt = f"""Search about {name}, {city}, {extras_text} on the web and integrate a summary using:
-    Title: {title}
-    Snippet: "{snippet}"
-    Entities:
-    {entity_summary}
-    Link: {link}
+    prompt = f"""You are an expert OSINT analyst.
 
-Generate a clear, concise summary suitable for an OSINT investigation report.
+Your task is to analyze and summarize a web result related to an individual named *{name}, located in **{city}*. Consider additional information such as: {extras_text}
+
+Use the details below to generate a clear and concise OSINT-style summary suitable for investigation reports.
+
+---
+
+🔹 *Title*: {title}  
+🔹 *Snippet*: "{snippet}"  
+🔹 *Entities extracted*:
+{entity_summary if entity_summary else "No named entities found."}
+🔹 *Source Link*: {link}
+
+---
+
+✍ Now, write a 3–5 sentence summary highlighting:
+- Relevance of this result to the individual
+- Any significant legal, professional, or social insights
+- Any risks or red flags if applicable
+
+Keep the tone professional, factual, and concise.
 """
     try:
         if search_id and search_id in progress_store:
