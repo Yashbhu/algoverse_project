@@ -13,20 +13,14 @@ CORS(app)
 
 
 progress_store = {}
-# osint_service ko batayein ki progress store karne ke liye is dictionary ka istemaal karein
 osint_service.progress_store = progress_store
 
 @app.route('/')
 def home():
-    """Ek simple route jo server ke chalne ki पुष्टि karta hai."""
     return "Flask server is up and running."
 
 @app.route("/osint", methods=["POST"])
 def osint():
-    """
-    Yeh endpoint ek background thread mein OSINT search shuru karta hai
-    aur client ko progress track karne ke liye ek search ID deta hai.
-    """
     data = request.json
     name = data.get("name")
     city = data.get("city")
@@ -39,12 +33,7 @@ def osint():
     progress_store[search_id] = {"percentage": 0, "stage": "Initializing...", "status": "running"}
 
     def run_search_in_background():
-        """
-        Yeh asli search task hai jo ek alag thread mein chalta hai,
-        taaki API responsive rahe.
-        """
         try:
-            # osint_service se function call karein
             final_result = osint_service.run_osint_with_progress(name, city, extras, search_id)
             progress_store[search_id].update({
                 "percentage": 100, 
@@ -67,7 +56,6 @@ def osint():
 
 @app.route("/progress/<search_id>", methods=["GET"])
 def get_progress(search_id):
-    """Client is endpoint se search ka status poll karta hai."""
     progress = progress_store.get(search_id)
     if not progress:
         return jsonify({"error": "Search ID not found"}), 404
@@ -75,7 +63,6 @@ def get_progress(search_id):
 
 @app.route("/generate-report", methods=["POST"])
 def generate_report():
-    """Person data se ek JSON report generate karta hai."""
     data = request.json.get("personData")
     if not data:
         return jsonify({"error": "Missing person data"}), 400
@@ -94,7 +81,6 @@ def generate_report():
         return jsonify({"error": f"Failed to generate report: {e}"}), 500
 
 if __name__ == "__main__":
-    # Check karein ki osint_service theek se initialize hua hai ya nahi
     if not osint_service.model or not osint_service.nlp:
         print("\n🚨 WARNING: Application is starting in a degraded state due to initialization errors.")
     
