@@ -10,7 +10,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { API_BASE_URL } from "@/config";
 import { Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, ResponsiveContainer, Tooltip, Legend } from 'recharts';
 
-// --- Helper Functions for Dynamic Styling ---
 
 const getRiskColor = (score) => {
     if (score >= 7) return 'text-red-400';
@@ -74,8 +73,6 @@ const SearchPage = () => {
     }
   }, [personData]);
 
-
-  // --- API Interaction Logic ---
 
   const pollProgress = (searchId) => {
     const pollInterval = setInterval(async () => {
@@ -145,7 +142,7 @@ const SearchPage = () => {
     setFormData({ name: '', city: '', extraTerms: '' });
   };
 
-  // --- Data for Chart ---
+
   const chartData = personData?.sourceAnalysis?.map(source => ({
     subject: source.name,
     A: source.count,
