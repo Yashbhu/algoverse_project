@@ -5,14 +5,13 @@ import json
 from datetime import datetime
 import threading
 import time
-
-# osint_service.py se zaroori functions import karein
+import karein
 import osint_service
 
 app = Flask(__name__)
 CORS(app) 
 
-# Yeh global dictionary hai jo search progress store karega
+
 progress_store = {}
 # osint_service ko batayein ki progress store karne ke liye is dictionary ka istemaal karein
 osint_service.progress_store = progress_store
