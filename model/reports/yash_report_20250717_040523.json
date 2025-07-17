@@ -1,0 +1,24 @@
+{
+    "confidence": "99%",
+    "lastUpdated": "2025-07-17",
+    "location": "delhi",
+    "name": "yash",
+    "sourceAnalysis": [
+        {
+            "count": 5,
+            "name": "LinkedIn",
+            "reliability": "High"
+        },
+        {
+            "count": 10,
+            "name": "Case/News",
+            "reliability": "Medium"
+        },
+        {
+            "count": 2,
+            "name": "General",
+            "reliability": "Low"
+        }
+    ],
+    "summary": "LinkedIn profile information indicates a Yash Gupta, potentially residing in Bengaluru but with a Delhi connection, works at Nova Benefits.  The profile suggests a professional network of 500+ connections, providing a potential avenue for further investigation into his professional activities and associates.  The relevance is moderate, offering a starting point for further OSINT inquiries but limited personal information."
+}

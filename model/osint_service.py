@@ -1,643 +1,264 @@
-import requests
-import spacy
+import os
 import json
 from datetime import datetime
-from dotenv import load_dotenv
-import os
-import re
-import google.generativeai as genai
-import threading
 import time
-from rapidfuzz import fuzz, process 
+import re
+import requests
+import spacy
+from dotenv import load_dotenv
+import google.generativeai as genai
+from collections import Counter
+from rapidfuzz import fuzz
+from dateutil.parser import parse as parse_date
+
+# --- Service Configuration & Initialization ---
 
 load_dotenv()
-
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("models/gemini-2.5-pro")
-nlp = spacy.load("en_core_web_sm")
-
-# Global progress store reference
 progress_store = {}
 
-def safe_filename(text):
-    return re.sub(r'[^A-Za-z0-9_]+', '_', text)
+try:
+    if not all([GOOGLE_API_KEY, GOOGLE_CSE_ID, GEMINI_API_KEY]):
+        raise ValueError("Required API keys (GOOGLE, GEMINI) are missing from .env file.")
+    
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    print("✅ Gemini AI model configured successfully.")
 
-def google_api_search(query, api_key, cse_id, max_results=100, tag=""):
+    nlp = spacy.load("en_core_web_sm")
+    print("✅ spaCy NLP model loaded successfully.")
+
+except (ValueError, OSError) as e:
+    print(f"🚨 FATAL INITIALIZATION ERROR: {e}")
+    model = None
+    nlp = None
+
+
+# --- OSINT Service Functions ---
+
+def google_api_search(query, api_key, cse_id, max_results=10, tag=""):
     url = "https://www.googleapis.com/customsearch/v1"
-    results = []
-    start = 1
-    while len(results) < max_results:
-        params = {
-            "q": query,
-            "key": api_key,
-            "cx": cse_id,
-            "num": min(10, max_results - len(results)),
-            "start": start,
-            "gl": "in",
-            "hl": "en"
-        }
-        resp = requests.get(url, params=params)
-        if resp.status_code != 200:
-            print(f"❌ Google API error {resp.status_code}: {resp.text}")
-            break
+    params = {"q": query, "key": api_key, "cx": cse_id, "num": max_results, "gl": "in", "hl": "en"}
+    try:
+        resp = requests.get(url, params=params, timeout=15)
+        resp.raise_for_status()
         items = resp.json().get("items", [])
-        if not items:
-            break
-        for item in items:
-            results.append({
-                "source": tag,
-                "title": item.get("title"),
-                "link": item.get("link"),
-                "snippet": item.get("snippet", "")
-            })
-        start += len(items)
-    print(f"✅ {tag} search got {len(results)} results for query: {query}")
-    return results
+        results = [{
+            "source": tag,
+            "title": item.get("title"),
+            "link": item.get("link"),
+            "snippet": item.get("snippet", ""),
+            "pagemap": item.get("pagemap", {}) 
+        } for item in items]
+        print(f"✅ {tag} search got {len(results)} results for query: '{query}'")
+        return results
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Google API error for query '{query}': {e}")
+        return []
 
-def merge_and_dedupe(results):
-    seen = set()
-    deduped = []
-    for r in results:
-        link = r.get("link")
-        if link and link not in seen:
-            seen.add(link)
-            deduped.append(r)
-    return deduped
+def extract_event_from_result(result):
+    try:
+        metatags = result.get("pagemap", {}).get("metatags", [{}])[0]
+        if 'article:published_time' in metatags:
+            return parse_date(metatags['article:published_time'])
+        if 'pagemap' in result and 'newsarticle' in result['pagemap'] and result['pagemap']['newsarticle'][0].get('datepublished'):
+             return parse_date(result['pagemap']['newsarticle'][0]['datepublished'])
+        text_to_scan = f"{result.get('title', '')} {result.get('snippet', '')}"
+        dt = parse_date(text_to_scan, fuzzy_with_tokens=True)
+        return dt[0]
+    except (ValueError, TypeError, KeyError):
+        return None
+
+def gemini_summarize_and_analyze(name, city, all_snippets):
+    if not model:
+        return {
+            "short_summary": "AI summarization is disabled.", 
+            "detailed_summary": "Detailed analysis could not be performed as the AI model is offline.",
+            "riskAnalysis": {"riskScore": 0, "riskJustification": "N/A", "sentimentScore": 0, "sentimentJustification": "N/A"}
+        }
+
+    context_block = "\n---\n".join(all_snippets)
+    prompt = f"""
+    As an expert OSINT analyst, analyze the following collected data snippets for an individual named '{name}' possibly related to '{city}'. This is the only information you are allowed to use.
+
+    **Collected Data:**
+    ---
+    {context_block}
+    ---
+
+    **Your Tasks:**
+    1.  **Generate a 'short_summary'**: A concise, 2-sentence executive summary based *only* on the provided data.
+    2.  **Generate a 'detailed_summary'**: A comprehensive, multi-sentence paragraph detailing the key findings, connections, and potential implications from the data, *only* using the provided text.
+    3.  **Provide a 'riskScore'**: An integer from 1 (low risk) to 10 (high risk).
+    4.  **Provide a 'riskJustification'**: A single sentence explaining the risk score.
+    5.  **Provide a 'sentimentScore'**: A float from -1.0 (very negative) to 1.0 (very positive).
+    6.  **Provide a 'sentimentJustification'**: A single sentence explaining the sentiment score.
+
+    **Output your response in a single, valid JSON object with the exact keys: "short_summary", "detailed_summary", "riskScore", "riskJustification", "sentimentScore", "sentimentJustification". Do not add any extra text or formatting.**
+    """
+    try:
+        response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+        cleaned_text = response.text.strip()
+        json_start = cleaned_text.find('{')
+        json_end = cleaned_text.rfind('}') + 1
+        if json_start != -1 and json_end != -1:
+            json_str = cleaned_text[json_start:json_end]
+            analysis = json.loads(json_str)
+        else:
+            raise ValueError("No valid JSON object found in the AI response.")
+
+        return {
+            "short_summary": analysis.get("short_summary", "Brief summary could not be generated."),
+            "detailed_summary": analysis.get("detailed_summary", "Detailed summary could not be generated."),
+            "riskAnalysis": {
+                "riskScore": analysis.get("riskScore", 0),
+                "riskJustification": analysis.get("riskJustification", "N/A"),
+                "sentimentScore": analysis.get("sentimentScore", 0),
+                "sentimentJustification": analysis.get("sentimentJustification", "N/A")
+            }
+        }
+    except Exception as e:
+        print(f"❌ Gemini AI analysis error: {e}")
+        if 'response' in locals(): print(f"RAW AI RESPONSE: {response.text}")
+        return {
+            "short_summary": "An error occurred during AI analysis.", 
+            "detailed_summary": "The detailed analysis could not be generated due to an AI error.",
+            "riskAnalysis": {"riskScore": 0, "riskJustification": "Analysis failed.", "sentimentScore": 0, "sentimentJustification": "Analysis failed."}
+        }
 
 def enrich_with_nlp(results):
+    if not nlp:
+        for r in results: r["entities"] = []
+        return results
     for r in results:
         text = f"{r.get('title', '')}. {r.get('snippet', '')}"
         doc = nlp(text)
         r["entities"] = [{"text": ent.text, "label": ent.label_} for ent in doc.ents]
     return results
 
-def cached_name_match(target_name, entities_tuple):
-    entities = [{"text": ent[0], "label": ent[1]} for ent in entities_tuple]
-    target_parts = [part.lower() for part in target_name.split() if part.strip()]
-
-    if len(target_parts) < 2:
-        target = target_parts[0]
-        for ent in entities:
-            if ent['label'] == 'PERSON':
-                person_name = ent['text'].lower()
-                if target in person_name or person_name in target:
-                    return True
-    else:
-        for ent in entities:
-            if ent['label'] == 'PERSON':
-                person_name = ent['text'].lower()
-                if all(part in person_name for part in target_parts):
-                    return True
+def is_name_match(target_name, entities):
+    target_parts = {part.lower() for part in target_name.split() if part.strip()}
+    for ent in entities:
+        if ent['label'] == 'PERSON':
+            person_name_parts = {part.lower() for part in ent['text'].split() if part.strip()}
+            if target_parts.issubset(person_name_parts):
+                return True
     return False
 
-def is_name_match(target_name, entities):
-    entities_tuple = tuple((ent["text"], ent["label"]) for ent in entities)
-    return cached_name_match(target_name, entities_tuple)
+def merge_and_dedupe(results_list):
+    seen_links = set()
+    deduped = []
+    for result in results_list:
+        link = result.get("link")
+        if link and link not in seen_links:
+            seen_links.add(link)
+            deduped.append(result)
+    return deduped
 
-def gemini_summarize_with_progress(name, city, extras, title, snippet, link, entities, search_id=None):
-    if search_id and search_id in progress_store:
-        progress_store[search_id].update({"percentage": 75, "stage": "Processing with Gemini AI..."})
-
-    extras_text = ", ".join(extras) if extras else "N/A"
-    entity_summary = "\n".join([f'- {e["label"]}: {e["text"]}' for e in entities])
-
-    prompt = f"""You are an expert OSINT analyst.
-
-Your task is to analyze and summarize a web result related to an individual named *{name}, located in **{city}*. Consider additional information such as: {extras_text}
-
-Use the details below to generate a clear and concise OSINT-style summary suitable for investigation reports.
-
----
-
-🔹 *Title*: {title}  
-🔹 *Snippet*: "{snippet}"  
-🔹 *Entities extracted*:
-{entity_summary if entity_summary else "No named entities found."}
-🔹 *Source Link*: {link}
-
----
-
-✍ Now, write a 3–5 sentence summary highlighting:
-- Relevance of this result to the individual
-- Any significant legal, professional, or social insights
-- Any risks or red flags if applicable
-
-Keep the tone professional, factual, and concise.
-"""
-    try:
-        if search_id and search_id in progress_store:
-            progress_store[search_id].update({"percentage": 78, "stage": "Analyzing content..."})
-        time.sleep(0.2)
-        if search_id and search_id in progress_store:
-            progress_store[search_id].update({"percentage": 82, "stage": "Generating insights..."})
-        response = model.generate_content(prompt)
-        if search_id and search_id in progress_store:
-            progress_store[search_id].update({"percentage": 88, "stage": "Finalizing summary..."})
-        time.sleep(0.2)
-        return response.text
-    except Exception as e:
-        print(f"Gemini error: {e}")
-        if search_id and search_id in progress_store:
-            progress_store[search_id].update({"percentage": 85, "stage": "Using fallback summary..."})
-        return f"Based on available information about {name} from {city}: {snippet[:200]}..."
-
-def run_osint_with_progress(name, city, extras, search_id=None):
+def run_osint_with_progress(name, city, extras, search_id):
     global progress_store
 
-    if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
-        raise ValueError("Missing Google API key or CSE ID in .env")
+    def update_progress(percentage, stage):
+        if search_id in progress_store:
+            progress_store[search_id].update({"percentage": percentage, "stage": stage})
+            time.sleep(0.1)
 
-    extra_text = " ".join(extras)
+    if not model or not nlp:
+        raise ConnectionError("Backend services (AI or NLP) failed to initialize.")
 
-    if search_id and search_id in progress_store:
-        progress_store[search_id].update({"percentage": 15, "stage": "Searching LinkedIn profiles..."})
+    update_progress(10, "Searching Professional Profiles (LinkedIn)...")
+    linkedin_results = google_api_search(f'site:linkedin.com/in "{name}" "{city}"', GOOGLE_API_KEY, GOOGLE_CSE_ID, 5, "LinkedIn")
+    time.sleep(2) 
 
-    linkedin_query = f'site:linkedin.com/in {name} {city} {extra_text}'
-    linkedin_results = google_api_search(linkedin_query, GOOGLE_API_KEY, GOOGLE_CSE_ID, max_results=5, tag="LinkedIn")
+    update_progress(20, "Searching News & Legal Sources...")
+    case_results = google_api_search(f'"{name}" "{city}" crime OR FIR OR arrested OR court OR case OR lawsuit', GOOGLE_API_KEY, GOOGLE_CSE_ID, 10, "Case/News")
+    time.sleep(2)
 
-    if search_id and search_id in progress_store:
-        progress_store[search_id].update({"percentage": 35, "stage": "Searching news sources..."})
+    update_progress(30, "Searching Reddit Discussions...")
+    reddit_results = google_api_search(f'site:reddit.com "{name}" "{city}"', GOOGLE_API_KEY, GOOGLE_CSE_ID, 5, "Reddit")
+    time.sleep(2)
 
-    case_keywords = 'crime OR FIR OR arrested OR chargesheet OR court OR case site:ndtv.com OR site:thehindu.com OR site:indiatoday.in OR site:barandbench.com OR site:livelaw.in'
-    news_query = f'{name} {city} {case_keywords} {extra_text}'
-    case_results = google_api_search(news_query, GOOGLE_API_KEY, GOOGLE_CSE_ID, max_results=5, tag="Case/News")
+    update_progress(40, "Searching Wikipedia...")
+    wiki_results = google_api_search(f'site:en.wikipedia.org "{name}"', GOOGLE_API_KEY, GOOGLE_CSE_ID, 2, "Wikipedia")
+    time.sleep(2)
 
-    if search_id and search_id in progress_store:
-        progress_store[search_id].update({"percentage": 55, "stage": "Collecting general information..."})
+    update_progress(50, "Searching Business & Corporate Databases...")
+    business_results = google_api_search(f'"{name}" site:crunchbase.com OR site:zaubacorp.com', GOOGLE_API_KEY, GOOGLE_CSE_ID, 5, "Business")
+    time.sleep(2)
+    
+    update_progress(60, "Searching Academic Papers...")
+    academic_results = google_api_search(f'"{name}" site:scholar.google.com', GOOGLE_API_KEY, GOOGLE_CSE_ID, 3, "Academic")
 
-    general_query = f'{name} {city} {extra_text}'
-    general_results = google_api_search(general_query, GOOGLE_API_KEY, GOOGLE_CSE_ID, max_results=5, tag="General")
-
-    if search_id and search_id in progress_store:
-        progress_store[search_id].update({"percentage": 65, "stage": "Processing search results..."})
-
-    combined = merge_and_dedupe(linkedin_results + case_results + general_results)
+    update_progress(70, "Processing all sources...")
+    all_results = [
+        linkedin_results, case_results, reddit_results, 
+        wiki_results, business_results, academic_results
+    ]
+    combined = merge_and_dedupe([item for sublist in all_results for item in sublist])
     if not combined:
-        print("⚠️ No search results found for the queries.")
-        return [{"error": "No relevant search results found for the given name and city."}]
+        raise ValueError("No search results found for the query.")
 
-    if search_id and search_id in progress_store:
-        progress_store[search_id].update({"percentage": 70, "stage": "Analyzing content with NLP..."})
-
+    update_progress(75, "Analyzing content with NLP...")
     combined = enrich_with_nlp(combined)
 
-    # ---------- Improved Filtering ----------
+    # --- REVERTED: Using the original, stricter filtering logic ---
     filtered_results = []
-
-    name_tokens = [t for t in name.split() if t.strip()]
-    name_lower   = " ".join(name_tokens).lower()
-
-    if name_tokens:
-        if len(name_tokens) >= 2:
-            full_name_regex = re.compile(r'\b' + r'\s+'.join(map(re.escape, name_tokens)) + r'\b', re.I)
+    for r in combined:
+        if is_name_match(name, r["entities"]):
+            filtered_results.append(r)
         else:
-            full_name_regex = re.compile(r'\b' + re.escape(name_tokens[0]) + r'\b', re.I)
-    else:
-        full_name_regex = None
-
-    for result in combined:
-        title   = result.get("title",   "")
-        snippet = result.get("snippet", "")
-        raw     = f"{title} {snippet}"
-        raw_low = raw.lower()
-
-    # 1️ spaCy entity
-        if is_name_match(name, result["entities"]):
-            filtered_results.append(result)
-            continue
-
-    # 2️ exact phrase
-        if full_name_regex and (full_name_regex.search(title) or full_name_regex.search(snippet)):
-            filtered_results.append(result)
-            print(f"✅ Included via exact phrase: {title}")
-            continue
-
-    # 3️ fuzzy full‑name match (≥90)
-        if fuzz.partial_ratio(name_lower, raw_low) >= 90:
-            filtered_results.append(result)
-            print(f"✅ Included via fuzzy full‑name: {title}")
-            continue
-
-    # 4️ fuzzy token‑by‑token (every token ≥85)
-        token_hits = [
-            fuzz.partial_ratio(tok.lower(), raw_low) >= 85
-            for tok in name_tokens
-            if tok
-        ]
-        if token_hits and all(token_hits):
-            filtered_results.append(result)
-            print(f"✅ Included via fuzzy tokens: {title}")
-        else:
-            print(f"⚠️ Skipped irrelevant result: {title}")
-
+            # This helps in debugging by showing what was skipped
+            print(f"⚠️ Skipped irrelevant result: {r.get('title')}")
+        
     if not filtered_results:
-        print("❌ No person match found in any search results.")
-        return [{"error": "No data found matching the person. They may not have a public profile or presence."}]
-
-    # ---------- Single Gemini call ----------
-    if filtered_results:
-        if search_id and search_id in progress_store:
-            progress_store[search_id].update({"percentage": 75, "stage": "Processing top result with AI..."})
-
-        first = filtered_results[0]
-        first_summary = gemini_summarize_with_progress(
-            name, city, extras,
-            first['title'], first['snippet'], first['link'], first['entities'],
-            search_id
-        )
-        first["gemini_summary"] = first_summary or "Summary not available."
-
-        for r in filtered_results[1:]:
-            r["gemini_summary"] = (
-                (r["snippet"][:200] + "...") if r.get("snippet") else
-                "Gemini summary skipped to conserve API calls."
-            )
-
-    return filtered_results
-
-# Backward‑compat wrapper
-def run_osint(name, city, extras):
-    return run_osint_with_progress(name, city, extras, None)
+        raise ValueError("No relevant information found matching the person after strict filtering.")
 
 
+    update_progress(85, "Performing AI risk & sentiment analysis...")
+    all_snippets = [f"Source: {r['source']}\nTitle: {r['title']}\nSnippet: {r['snippet']}" for r in filtered_results]
+    ai_analysis = gemini_summarize_and_analyze(name, city, all_snippets)
 
+    update_progress(95, "Constructing event timeline...")
+    timeline_events = []
+    for result in filtered_results:
+        event_date = extract_event_from_result(result)
+        if event_date:
+            timeline_events.append({
+                "date": event_date.strftime('%Y-%m-%d'),
+                "title": result.get('title', 'Referenced Event'),
+                "source": result.get('source', 'Unknown')
+            })
+    timeline_events.sort(key=lambda x: x['date'], reverse=True)
 
-# import requests
-# import spacy
-# import json
-# from datetime import datetime
-# from dotenv import load_dotenv
-# import os
-# import re
-# import google.generativeai as genai
-
-# load_dotenv()
-
-# GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-# GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
-# GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-# genai.configure(api_key=GEMINI_API_KEY)
-# model = genai.GenerativeModel("models/gemini-2.5-pro")
-# nlp = spacy.load("en_core_web_sm")
-
-# def safe_filename(text):
-#     return re.sub(r'[^A-Za-z0-9_]+', '_', text)
-
-# def google_api_search(query, api_key, cse_id, max_results=100, tag=""):
-#     url = "https://www.googleapis.com/customsearch/v1"
-#     results = []
-#     start = 1
-#     while len(results) < max_results:
-#         params = {
-#             "q": query,
-#             "key": api_key,
-#             "cx": cse_id,
-#             "num": min(10, max_results - len(results)),
-#             "start": start,
-#             "gl": "in",
-#             "hl": "en"
-#         }
-#         resp = requests.get(url, params=params)
-#         if resp.status_code != 200:
-#             print(f"❌ Google API error {resp.status_code}: {resp.text}")
-#             break
-#         items = resp.json().get("items", [])
-#         if not items:
-#             break
-#         for item in items:
-#             results.append({
-#                 "source": tag,
-#                 "title": item.get("title"),
-#                 "link": item.get("link"),
-#                 "snippet": item.get("snippet", "")
-#             })
-#         start += len(items)
-#     print(f"✅ {tag} search got {len(results)} results for query: {query}")
-#     return results
-
-# def merge_and_dedupe(results):
-#     seen = set()
-#     deduped = []
-#     for r in results:
-#         link = r.get("link")
-#         if link and link not in seen:
-#             seen.add(link)
-#             deduped.append(r)
-#     return deduped
-
-# def enrich_with_nlp(results):
-#     for r in results:
-#         text = f"{r.get('title', '')}. {r.get('snippet', '')}"
-#         doc = nlp(text)
-#         r["entities"] = [{"text": ent.text, "label": ent.label_} for ent in doc.ents]
-#     return results
-
-# def is_name_match(target_name, entities):
-#     target_parts = [part.lower() for part in target_name.split() if part.strip()]
-#     if len(target_parts) < 2:
-#         target = target_parts[0]
-#         for ent in entities:
-#             if ent['label'] == 'PERSON':
-#                 person_name = ent['text'].lower()
-#                 if target in person_name or person_name in target:
-#                     return True
-#     else:
-#         for ent in entities:
-#             if ent['label'] == 'PERSON':
-#                 person_name = ent['text'].lower()
-#                 if all(part in person_name for part in target_parts):
-#                     return True
-#     return False
-
-# def gemini_summarize(name, city, extras, title, snippet, link, entities):
-#     extras_text = ", ".join(extras) if extras else "N/A"
-#     entity_summary = "\n".join([f'- {e["label"]}: {e["text"]}' for e in entities])
-#     prompt = f"""Search about {name}, {city}, {extras_text} on the web and integrate a summary using:
-#     Title: {title}
-#     Snippet: "{snippet}"
-#     Entities:
-#     {entity_summary}
-#     Link: {link}
-
-# Generate a clear, concise summary suitable for an OSINT investigation report.
-# """
-#     try:
-#         response = model.generate_content(prompt)
-#         return response.text
-#     except Exception as e:
-#         print(f"Gemini error: {e}")
-#         return None
-
-# def run_osint(name, city, extras):
-#     if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
-#         raise ValueError("Missing Google API key or CSE ID in .env")
-
-#     extra_text = " ".join(extras)
-
-#     linkedin_query = f'site:linkedin.com/in {name} {city} {extra_text}'
-#     case_keywords = 'crime OR FIR OR arrested OR chargesheet OR court OR case site:ndtv.com OR site:thehindu.com OR site:indiatoday.in OR site:barandbench.com OR site:livelaw.in'
-#     news_query = f'{name} {city} {case_keywords} {extra_text}'
-#     general_query = f'{name} {city} {extra_text}'
-
-#     linkedin_results = google_api_search(linkedin_query, GOOGLE_API_KEY, GOOGLE_CSE_ID, max_results=5, tag="LinkedIn")
-#     case_results = google_api_search(news_query, GOOGLE_API_KEY, GOOGLE_CSE_ID, max_results=5, tag="Case/News")
-#     general_results = google_api_search(general_query, GOOGLE_API_KEY, GOOGLE_CSE_ID, max_results=5, tag="General")
-
-#     combined = merge_and_dedupe(linkedin_results + case_results + general_results)
-#     if not combined:
-#         print("⚠️ No search results found for the queries.")
-#         return [{"error": "No relevant search results found for the given name and city."}]
-
-#     combined = enrich_with_nlp(combined)
-
-#     filtered_results = []
-#     for result in combined:
-#         if is_name_match(name, result['entities']):
-#             filtered_results.append(result)
-#         else:
-#             print(f"⚠️ Skipped irrelevant result: {result.get('title')}")
-
-#     if not filtered_results:
-#         print("❌ No person match found in any search results.")
-#         return [{"error": "No data found matching the person. They may not have a public profile or presence."}]
-
-#     for r in filtered_results:
-#         summary = gemini_summarize(name, city, extras, r['title'], r['snippet'], r['link'], r['entities'])
-#         r["gemini_summary"] = summary or "Summary not available."
-
-#     return filtered_results
-
-# import requests
-# import spacy
-# import json
-# from datetime import datetime
-# from dotenv import load_dotenv
-# import os
-# import re
-# import google.generativeai as genai
-# import threading
-# import time
-
-# load_dotenv()
-
-# GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-# GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
-# GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-# genai.configure(api_key=GEMINI_API_KEY)
-# model = genai.GenerativeModel("models/gemini-2.5-pro")
-# nlp = spacy.load("en_core_web_sm")
-
-# # Global progress store reference
-# progress_store = {}
-
-# def safe_filename(text):
-#     return re.sub(r'[^A-Za-z0-9_]+', '_', text)
-
-# def google_api_search(query, api_key, cse_id, max_results=100, tag=""):
-#     url = "https://www.googleapis.com/customsearch/v1"
-#     results = []
-#     start = 1
-#     while len(results) < max_results:
-#         params = {
-#             "q": query,
-#             "key": api_key,
-#             "cx": cse_id,
-#             "num": min(10, max_results - len(results)),
-#             "start": start,
-#             "gl": "in",
-#             "hl": "en"
-#         }
-#         resp = requests.get(url, params=params)
-#         if resp.status_code != 200:
-#             print(f"❌ Google API error {resp.status_code}: {resp.text}")
-#             break
-#         items = resp.json().get("items", [])
-#         if not items:
-#             break
-#         for item in items:
-#             results.append({
-#                 "source": tag,
-#                 "title": item.get("title"),
-#                 "link": item.get("link"),
-#                 "snippet": item.get("snippet", "")
-#             })
-#         start += len(items)
-#     print(f"✅ {tag} search got {len(results)} results for query: {query}")
-#     return results
-
-# def merge_and_dedupe(results):
-#     seen = set()
-#     deduped = []
-#     for r in results:
-#         link = r.get("link")
-#         if link and link not in seen:
-#             seen.add(link)
-#             deduped.append(r)
-#     return deduped
-
-# def enrich_with_nlp(results):
-#     for r in results:
-#         text = f"{r.get('title', '')}. {r.get('snippet', '')}"
-#         doc = nlp(text)
-#         r["entities"] = [{"text": ent.text, "label": ent.label_} for ent in doc.ents]
-#     return results
-
-# def is_name_match(target_name, entities):
-#     target_parts = [part.lower() for part in target_name.split() if part.strip()]
-#     if len(target_parts) < 2:
-#         target = target_parts[0]
-#         for ent in entities:
-#             if ent['label'] == 'PERSON':
-#                 person_name = ent['text'].lower()
-#                 if target in person_name or person_name in target:
-#                     return True
-#     else:
-#         for ent in entities:
-#             if ent['label'] == 'PERSON':
-#                 person_name = ent['text'].lower()
-#                 if all(part in person_name for part in target_parts):
-#                     return True
-#     return False
-
-# def gemini_summarize_with_progress(name, city, extras, title, snippet, link, entities, search_id=None):
-#     """Enhanced Gemini summarization with progress tracking"""
+    all_possible_sources = ["LinkedIn", "Case/News", "Reddit", "Wikipedia", "Business", "Academic", "General"]
+    source_counts = Counter(r['source'] for r in filtered_results)
     
-#     # Update progress for Gemini processing start
-#     if search_id and search_id in progress_store:
-#         progress_store[search_id].update({"percentage": 75, "stage": "Processing with Gemini AI..."})
-    
-#     extras_text = ", ".join(extras) if extras else "N/A"
-#     entity_summary = "\n".join([f'- {e["label"]}: {e["text"]}' for e in entities])
-    
-#     prompt = f"""Search about {name}, {city}, {extras_text} on the web and integrate a summary using:
-#     Title: {title}
-#     Snippet: "{snippet}"
-#     Entities:
-#     {entity_summary}
-#     Link: {link}
+    source_analysis = []
+    for source in all_possible_sources:
+        source_analysis.append({
+            "name": source,
+            "count": source_counts.get(source, 0)
+        })
 
-# Generate a clear, concise summary suitable for an OSINT investigation report.
-# """
-    
-#     try:
-#         # Update progress for content analysis
-#         if search_id and search_id in progress_store:
-#             progress_store[search_id].update({"percentage": 78, "stage": "Analyzing content..."})
-        
-#         # Add a small delay to show progress
-#         time.sleep(0.2)
-        
-#         # Update progress for AI processing
-#         if search_id and search_id in progress_store:
-#             progress_store[search_id].update({"percentage": 82, "stage": "Generating insights..."})
-        
-#         # Make the actual Gemini call
-#         response = model.generate_content(prompt)
-        
-#         # Update progress for finalizing
-#         if search_id and search_id in progress_store:
-#             progress_store[search_id].update({"percentage": 88, "stage": "Finalizing summary..."})
-        
-#         time.sleep(0.2)  # Small delay to show progress
-        
-#         return response.text
-        
-#     except Exception as e:
-#         print(f"Gemini error: {e}")
-        
-#         # Update progress for error or fallback
-#         if search_id and search_id in progress_store:
-#             progress_store[search_id].update({"percentage": 85, "stage": "Using fallback summary..."})
-        
-#         # Return a fallback summary based on the snippet
-#         return f"Based on available information about {name} from {city}: {snippet[:200]}..."
+    raw_data_for_frontend = [
+        {
+            "title": r.get("title"),
+            "snippet": r.get("snippet"),
+            "link": r.get("link"),
+            "source": r.get("source")
+        } for r in filtered_results
+    ]
 
-# def run_osint_with_progress(name, city, extras, search_id=None):
-#     """Enhanced OSINT function with detailed progress tracking"""
-    
-#     global progress_store
-    
-#     if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
-#         raise ValueError("Missing Google API key or CSE ID in .env")
-
-#     extra_text = " ".join(extras)
-
-#     # Update progress for LinkedIn search
-#     if search_id and search_id in progress_store:
-#         progress_store[search_id].update({"percentage": 15, "stage": "Searching LinkedIn profiles..."})
-
-#     linkedin_query = f'site:linkedin.com/in {name} {city} {extra_text}'
-#     linkedin_results = google_api_search(linkedin_query, GOOGLE_API_KEY, GOOGLE_CSE_ID, max_results=5, tag="LinkedIn")
-    
-#     # Update progress for news search
-#     if search_id and search_id in progress_store:
-#         progress_store[search_id].update({"percentage": 35, "stage": "Searching news sources..."})
-    
-#     case_keywords = 'crime OR FIR OR arrested OR chargesheet OR court OR case site:ndtv.com OR site:thehindu.com OR site:indiatoday.in OR site:barandbench.com OR site:livelaw.in'
-#     news_query = f'{name} {city} {case_keywords} {extra_text}'
-#     case_results = google_api_search(news_query, GOOGLE_API_KEY, GOOGLE_CSE_ID, max_results=5, tag="Case/News")
-    
-#     # Update progress for general search
-#     if search_id and search_id in progress_store:
-#         progress_store[search_id].update({"percentage": 55, "stage": "Collecting general information..."})
-    
-#     general_query = f'{name} {city} {extra_text}'
-#     general_results = google_api_search(general_query, GOOGLE_API_KEY, GOOGLE_CSE_ID, max_results=5, tag="General")
-
-#     # Update progress for processing results
-#     if search_id and search_id in progress_store:
-#         progress_store[search_id].update({"percentage": 65, "stage": "Processing search results..."})
-
-#     combined = merge_and_dedupe(linkedin_results + case_results + general_results)
-    
-#     if not combined:
-#         print("⚠️ No search results found for the queries.")
-#         return [{"error": "No relevant search results found for the given name and city."}]
-
-#     # Update progress for NLP processing
-#     if search_id and search_id in progress_store:
-#         progress_store[search_id].update({"percentage": 70, "stage": "Analyzing content with NLP..."})
-
-#     combined = enrich_with_nlp(combined)
-
-#     filtered_results = []
-#     for result in combined:
-#         if is_name_match(name, result['entities']):
-#             filtered_results.append(result)
-#         else:
-#             print(f"⚠️ Skipped irrelevant result: {result.get('title')}")
-
-#     if not filtered_results:
-#         print("❌ No person match found in any search results.")
-#         return [{"error": "No data found matching the person. They may not have a public profile or presence."}]
-
-#     # Process each result with Gemini (with progress updates)
-#     for i, r in enumerate(filtered_results):
-#         # Update progress for each Gemini call
-#         base_progress = 75 + (i * 10 / len(filtered_results))  # Distribute remaining 15% across results
-        
-#         if search_id and search_id in progress_store:
-#             progress_store[search_id].update({
-#                 "percentage": int(base_progress), 
-#                 "stage": f"Processing result {i+1}/{len(filtered_results)} with AI..."
-#             })
-        
-#         summary = gemini_summarize_with_progress(
-#             name, city, extras, r['title'], r['snippet'], r['link'], r['entities'], search_id
-#         )
-#         r["gemini_summary"] = summary or "Summary not available."
-
-#     return filtered_results
-
-# # Keep the original function for backward compatibility
-# def run_osint(name, city, extras):
-#     """Original OSINT function without progress tracking"""
-#     return run_osint_with_progress(name, city, extras, None)
-
-
+    return {
+        "name": name,
+        "location": city,
+        "short_summary": ai_analysis.get("short_summary"),
+        "detailed_summary": ai_analysis.get("detailed_summary"),
+        "riskAnalysis": ai_analysis.get("riskAnalysis"),
+        "sourceAnalysis": source_analysis,
+        "timelineEvents": timeline_events,
+        "raw_data": raw_data_for_frontend
+    }
